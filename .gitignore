@@ -1,3 +1,5 @@
 .env
 data/
 __pycache__/
+minio/data
+minio/minio.license
