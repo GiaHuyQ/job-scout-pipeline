@@ -1,10 +1,13 @@
 [project]
-name = "elt"
+name = "job-scout-pipeline"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "boto3>=1.43.39",
+    "httpx>=0.28.1",
     "playwright>=1.61.0",
     "playwright-stealth>=2.0.3",
+    "pydantic-settings>=2.14.2",
 ]
