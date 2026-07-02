@@ -1,0 +1,55 @@
+# Read the documentation before extending the defaults:
+# https://docs.searxng.org/admin/settings/
+
+use_default_settings: true
+
+server:
+  secret_key: "LvcZfbAL8rC5uanwrbDfkXGIFCk4uM4"
+  image_proxy: true
+
+search:
+    formats:
+      - html
+      - json
+engines:
+  - name: wikipedia
+    engine: wikipedia
+    disabled: true
+
+  - name: wikidata
+    engine: wikidata
+    disabled: true
+
+  - name: duckduckgo
+    engine: duckduckgo
+    disabled: false
+
+  - name: startpage
+    engine: startpage
+    disabled: true
+
+  - name: qwant
+    engine: qwant
+    disabled: true
+
+  - name: yahoo
+    engine: yahoo
+    disabled: false
+
+  - name: brave
+    engine: brave
+    disabled: false
+
+  - name: google
+    engine: google
+    disabled: false
+
+bot_detection:
+  ip_limit:
+    filter_link_local: true
+    block_ip: false
+
+outgoing:
+  enable_http2: false       
+  max_request_timeout: 10.0
+  useragent_suffix: ""
