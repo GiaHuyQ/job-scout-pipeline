@@ -1,4 +1,4 @@
-import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 
 @dataclass
@@ -18,6 +18,6 @@ class CrawlResult:
     screenshot_bytes: bytes | None = None
     inner_html: str | None = None
     title: str | None = None
-    fetched_at: float = field(default_factory=time.time)
+    fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     error: str | None = None
 
