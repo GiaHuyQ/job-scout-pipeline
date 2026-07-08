@@ -31,6 +31,10 @@ engines:
   - name: qwant
     engine: qwant
     disabled: true
+  
+  - name: bing
+    engine: bing
+    disabled: false
 
   - name: yahoo
     engine: yahoo
