@@ -6,65 +6,77 @@ logger = logging.getLogger(__name__)
 
 def search_searxng(keyword: str, site: str | None, max_results: int = 3) -> list[CrawlTarget]:
     """
-    Queries the local SearXNG container instance to retrieve search results safely.
+    Search for jobs using a local SearXNG instance.
     
-    Swallows remote protocol and connection errors to prevent downstream pipeline crashes
-    and allow the orchestrator to trigger its self-healing retry mechanisms.
+    It tries search engines one by one in this order:
+    bing -> duckduckgo -> brave -> google.
     
+    It returns results from the first engine that works successfully.
+    This helps to avoid getting blocked by making too many requests.
+
     Args:
-        keyword: The unified lookup search term (e.g., 'ai engineer').
-        site: Domain boundary scope limit to restrict search results.
-        max_results: Strict maximum result batch size ceiling cap metrics.
-        
+        keyword: The job title or skill to search (e.g., 'python developer').
+        site: The target domain to restrict results (e.g., 'itviec.com').
+        max_results: The maximum number of links to return.
+
     Returns:
-        A list of mapped CrawlTarget objects. Returns an empty list on network failures.
+        A list of CrawlTarget objects, or an empty list if all engines fail.
     """
-    # Initialize an empty target storage array
-    targets = []
-    
-    # Enforce exact phrasing using double quotes and append target site constraint if present
+    # 1. Create the exact query string
     query_str = f'"{keyword}"'
     if site:
         query_str += f" site:{site}"
         
     url = "http://localhost:8888/search"
-    params = {
-        "q": query_str,
-        "format": "json",
-        "pageno": 1
-    }
     
-    try:
-        # Execute the synchronous network request with a strict timeout guardrail
-        with httpx.Client(timeout=10.0) as client:
-            response = client.get(url, params=params)
+    # 2. Define the fallback order of search engines
+    engines_order = ["bing", "duckduckgo", "brave", "yahoo", "google"]
+    
+    # Use a single HTTP client session to reuse connections efficiently
+    with httpx.Client(timeout=10.0) as client:
+        for engine in engines_order:
+            # Configure params to force SearXNG to use only ONE specific engine
+            params = {
+                "q": query_str,
+                "format": "json",
+                "pageno": 1,
+                "engines": engine  # Instruct SearXNG to query this engine only
+            }
             
-            if response.status_code == 200:
-                data = response.json()
-                results = data.get("results", [])
+            logger.info("Attempting search with engine: [%s] for query: %s", engine, query_str)
+            
+            try:
+                response = client.get(url, params=params)
                 
-                # Slice and map raw JSON entries into structured schema objects
-                for res in results[:max_results]:
-                    targets.append(CrawlTarget(
-                        url=res.get("url"),
-                        query=keyword,
-                        site=site or "unknown"
-                    ))
+                if response.status_code == 200:
+                    data = response.json()
+                    results = data.get("results", [])
                     
-    # CRITICAL PROTECTION PATCH: Intercept SearXNG/upstream disconnection anomalies cleanly
-    except (httpx.RemoteProtocolError, httpx.HTTPError) as net_exc:
-        logger.warning(
-            "SearXNG network or protocol disruption intercepted: %s. "
-            "Returning empty cluster seed to trigger defensive orchestrator retry loop.", 
-            net_exc
-        )
-        return [] # Return an empty list to seamlessly bubble up a recovery retry trigger
-        
-    except Exception as general_exc:
-        logger.error(
-            "Unexpected internal parsing anomaly diagnosed inside search engine abstraction: %s", 
-            general_exc
-        )
-        return []
-        
-    return targets
+                    # EARLY RETURN: If this engine has results, parse and return them immediately!
+                    if results:
+                        logger.info("Successfully fetched results from engine: [%s]", engine)
+                        targets = []
+                        for res in results[:max_results]:
+                            targets.append(CrawlTarget(
+                                url=res.get("url"),
+                                query=keyword,
+                                site=site or "unknown"
+                            ))
+                        return targets # Stop the loop and return the data safely
+                    
+                    # If status is 200 but results list is empty, log it and try next engine
+                    logger.warning("Engine [%s] returned 0 results. Moving to next fallback.", engine)
+                    
+            # Handle specific network/protocol errors for the current engine
+            except (httpx.RemoteProtocolError, httpx.HTTPError) as net_exc:
+                logger.warning("Network issue with engine [%s]: %s. Trying next fallback.", engine, net_exc)
+                continue # Skip to the next engine in the list
+                
+            # Handle any other unexpected errors safely
+            except Exception as general_exc:
+                logger.error("Unexpected error occurred while parsing engine [%s]: %s", engine, general_exc)
+                continue # Keep the pipeline alive and try the next engine
+
+    # 3. If the loop completes and no engine returned results, return an empty list
+    logger.error("All search engines (bing, duckduckgo, brave, yahoo, google) failed to return results.")
+    return []
