@@ -2,16 +2,16 @@ import argparse
 import asyncio
 import logging
 import random
-from urllib.parse import urljoin
-from playwright.async_api import Browser, Page, async_playwright
+import hashlib
+from urllib.parse import urljoin, quote
 
 from logging_config import setup_logging
 from config import settings
-
 from workers.schemas import CrawlTarget, CrawlResult
 from workers.search import search_searxng
-from workers.store import save_dual_bronze
-from workers.interactions import USER_AGENT, smooth_scroll_targeted_element, human_like_idle_scrolling
+from workers.interactions import smooth_scroll_targeted_element, human_like_idle_scrolling
+
+from playwright.async_api import Browser, Page, async_playwright
 
 setup_logging(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ async def extract_inner_links(browser: Browser, main_target: CrawlTarget, limit:
     return sub_targets
 
 
-async def fetch_and_save_worker(browser: Browser, target: CrawlTarget, semaphore: asyncio.Semaphore) -> None:
+async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semaphore: asyncio.Semaphore, bucket: str, async_s3_client) -> None:
     """Worker node execution lifecycle with programmatic layout sanitization macros."""
     async with semaphore:
         context = None
@@ -161,14 +161,70 @@ async def fetch_and_save_worker(browser: Browser, target: CrawlTarget, semaphore
             if context:
                 await context.close()
 
-        # Commit result to disk storage layer
-        if result and result.status == "ok":
-            save_dual_bronze(result, target_selector=SELECTOR_JOB_CONTAINER, user_agent=USER_AGENT)
+        # Commit result to streaming layers
+        if result and result.status == "ok" and result.inner_html is not None and result.screenshot_bytes is not None:
+            try:
+                job_id  = hashlib.sha256(result.url.encode()).hexdigest()[:16]
+                query = result.query.replace(" ", "-").lower()
+                date_str = str(result.fetched_at.date())
+                fetched_at_iso = result.fetched_at.isoformat()
+                acsii_title = quote(str(result.title))
+
+                html_key = f"date={date_str}/query={query}/site={result.site}/job_id={job_id}.html"
+                png_key = f"date={date_str}/query={query}/site={result.site}/job_id={job_id}.png"
+
+                html_metadata = {
+                    "query": query,
+                    "site": result.site,
+                    "url": result.url,
+                    "title": acsii_title,
+                    "html_character_length": str(len(result.inner_html)),
+                    "fetched_at": fetched_at_iso
+                }
+
+                png_metadata = {
+                    "query": query,
+                    "site": result.site,
+                    "url": result.url,
+                    "title": acsii_title,
+                    "screenshot_bytes_size": str(len(result.screenshot_bytes)),
+                    "fetched_at": fetched_at_iso
+                }
+
+                html_tagging = "Pipeline=JobScout&Stage=Bronze&DataType=HTML"
+                png_tagging = "Pipeline=JobScout&Stage=Bronze&DataType=Image"
+
+                logger.info("Streaming HTML directly from RAM to MinIO: %s", html_key)
+
+                await async_s3_client.put_object(
+                    Bucket=bucket,
+                    Key=html_key,
+                    Body=result.inner_html.encode("utf-8"),
+                    ContentType="text/html",
+                    Metadata=html_metadata,
+                    Tagging=html_tagging
+
+                )
+
+                logger.info("Streaming PNG directly from RAM to MinIO: %s", png_key)
+
+                await async_s3_client.put_object(
+                    Bucket=bucket,
+                    Key=png_key,
+                    Body=result.screenshot_bytes,
+                    ContentType="image/png",
+                    Metadata=png_metadata,
+                    Tagging=png_tagging
+                )
+            except Exception as s3_err:
+                logger.error("Failed to stream artifacts to MinIO for %s: %s", target.url, s3_err)
             
-        await asyncio.sleep(random.uniform(1.0, 2.5))
+        actual_delay = settings.REQUEST_DELAY_SEC * random.uniform(0.8, 1.2)
+        logger.info("Enforcing anti-bot jitter delay: Sleeping for %.2f seconds...", actual_delay)
+        await asyncio.sleep(actual_delay)
 
 
-async def run_crawl(keyword: str, site: str | None, max_results: int) -> int:
+async def run_crawl(keyword: str, site: str | None, max_results: int, bucket: str, async_s3_client) -> int:
     """Main sequence controller orchestrating VietnamWorks asynchronous clusters."""
     main_targets = search_searxng(keyword, site)
     if not main_targets:
@@ -199,7 +255,11 @@ async def run_crawl(keyword: str, site: str | None, max_results: int) -> int:
             if not unique_sub_targets:
                 return 0 
 
-            tasks = [fetch_and_save_worker(browser, t, semaphore) for t in unique_sub_targets]
+            tasks = [
+                fetch_and_stream_worker(browser, t, semaphore, bucket, async_s3_client) 
+                    for t in unique_sub_targets
+            ]
+            
             await asyncio.gather(*tasks)
   
             return len(unique_sub_targets)
@@ -213,14 +273,36 @@ async def run_crawl(keyword: str, site: str | None, max_results: int) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Standalone Runner for VietnamWorks Worker.")
+    parser = argparse.ArgumentParser(description="Standalone Test Entrypoint Executable for CareerViet.")
     parser.add_argument("--keyword", required=True)
     parser.add_argument("--site", default="vietnamworks.com")
     parser.add_argument("--max-results", type=int, default=3)
+    parser.add_argument("--bucket-name", type=str, default="jobs-bronze")
     args = parser.parse_args()
+    
+    import aioboto3
+    from aiobotocore.config import AioConfig
 
-    asyncio.run(run_crawl(args.keyword, args.site, args.max_results))
+    MINIO_CONFIG = {
+    "endpoint_url": settings.MINIO_ENDPOINT_URL,
+    "aws_access_key_id": settings.MINIO_ROOT_USER,
+    "aws_secret_access_key": settings.MINIO_ROOT_PASSWORD.get_secret_value(),
+    "config": AioConfig(signature_version="s3v4"),
+    "region_name": "us-east-1"
+}
 
+    async def async_test_runner():
+        session = aioboto3.Session()
+        async with session.client("s3", **MINIO_CONFIG) as async_s3_client: # type: ignore
+            await run_crawl(
+                keyword=args.keyword, 
+                site=args.site, 
+                max_results=args.max_results, 
+                bucket=args.bucket_name, 
+                async_s3_client=async_s3_client
+            )
+
+    asyncio.run(async_test_runner())
 
 if __name__ == "__main__":
     main()
