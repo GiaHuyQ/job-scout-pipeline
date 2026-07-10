@@ -10,7 +10,6 @@ from dagster import RetryPolicy, Backoff, AssetExecutionContext, AssetCheckExecu
 from pydantic import Field
 
 from orchestrator.resources.minio_resource import MinIOS3Resource
-# Giả định các hàm crawl của bạn đã import từ file tương ứng
 from workers.worker_topcv.scraper import run_crawl as topcv_crawl
 from workers.worker_itviec.scraper import run_crawl as itviec_crawl
 from workers.worker_careerviet.scraper import run_crawl as careerviet_crawl
