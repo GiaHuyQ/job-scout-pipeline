@@ -69,9 +69,11 @@ async def run_base_crawl(
     
     return dg.MaterializeResult(
         metadata={
-            "jobs_count": dg.MetadataValue.int(result_count),
+            "query": dg.MetadataValue.text(config.keyword.replace(' ', '-')),
             "site": dg.MetadataValue.text(site_name),
+            "jobs_count": dg.MetadataValue.int(result_count),
             "duration_sec": dg.MetadataValue.float(duration),
+            "date": dg.MetadataValue.text(fetched_at),
             "prefix": dg.MetadataValue.text(prefix)
         }
     )
@@ -103,7 +105,7 @@ def run_check(context: AssetCheckExecutionContext, bronze_minio: MinIOS3Resource
     context.log.info(f"Validating data for {site_name} at path: {prefix}")
     
     file_count = count_s3_files(bronze_minio, prefix)
-    is_passed = 0 < file_count <= config.max_results * 2
+    is_passed = file_count >= config.max_results * 2
     
     if not is_passed:
         context.log.error(f"Check failed! Found {file_count} files for {site_name}.")
