@@ -5,9 +5,18 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "boto3>=1.43.39",
+    "aioboto3",
+    "beautifulsoup4>=4.15.0",
+    "dagster>=1.13.12",
+    "dagster-aws>=0.29.12",
+    "dagster-dg-cli>=1.13.12",
+    "dagster-webserver>=1.13.12",
     "httpx>=0.28.1",
+    "openai>=2.45.0",
     "playwright>=1.61.0",
     "playwright-stealth>=2.0.3",
     "pydantic-settings>=2.14.2",
 ]
+
+[tool.dagster]
+module_name = "orchestrator.definitions"
