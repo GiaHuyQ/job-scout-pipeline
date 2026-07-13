@@ -3,3 +3,5 @@ data/
 __pycache__/
 minio/data
 minio/minio.license
+.tmp_dagster_home_*
+.dagster_home
