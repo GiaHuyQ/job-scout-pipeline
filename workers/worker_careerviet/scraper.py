@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 SELECTOR_LISTING_ANCHOR = "div.main-slide a.job_link"
 SELECTOR_NEXT_PAGE = "div.pagination li.next-page a"
 SELECTOR_JOB_CONTAINER = "section.job-detail-content"
+SELECTOR_JOB_TITLE = "section.apply-now-banner h1.title"
 
 async def extract_inner_links(browser: Browser, main_target: CrawlTarget, limit: int) -> list[CrawlTarget]:
     """Scans CareerViet listing pagination tree to extract canonical target URLs."""
@@ -141,7 +142,19 @@ async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semapho
             
             title = await page.title()
             screenshot_bytes = await container_locator.screenshot(type="png")
-            inner_html = await container_locator.inner_html()
+            container_html = await container_locator.inner_html()
+            
+            try:
+                title_locator = page.locator(SELECTOR_JOB_TITLE).first
+                await title_locator.wait_for(state="attached", timeout=3000)
+                # Use outer_html to grab the tag itself along with its contents: <h1 class="title">...</h1>
+                title_html = await title_locator.evaluate("el => el.outerHTML")
+
+            except Exception as e:
+                logger.warning("Failed to extract HTML for the title tag on %s. Error: %s", target.url, e)
+                title_html = ""
+
+            inner_html = f"{title_html}\n{container_html}"
             
             result = CrawlResult(
                 url=target.url, query=target.query, site=target.site, status="ok",

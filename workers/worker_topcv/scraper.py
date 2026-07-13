@@ -17,7 +17,7 @@ setup_logging(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 # TopCV Domain Specific Selectors Configurations
-SELECTOR_JOB_CONTAINER = "div#box-job-information-detail.job-detail__information-detail"
+SELECTOR_JOB_CONTAINER = "div.job-detail__body-left"
 SELECTOR_EXPAND_BUTTON = ".content-preview__toggle > button:nth-child(1)"
 SELECTOR_LISTING_ANCHOR = "div.job-item-search-result div.avatar a"
 SELECTOR_NEXT_PAGE = "ul.pagination li.next a, .pagination a.next, .pagination a:has-text('›')"
@@ -91,7 +91,6 @@ async def extract_inner_links(browser: Browser, main_target: CrawlTarget, limit:
             
     return sub_targets
 
-
 async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semaphore: asyncio.Semaphore, bucket:str, async_s3_client) -> None:
     """Worker lifecycle pipeline: Click interaction, smooth scroll, clean-up, and save."""
     async with semaphore:
@@ -125,10 +124,57 @@ async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semapho
             await content_element.scroll_into_view_if_needed()
             await page.wait_for_timeout(500)
             
+            title = await page.title()
+
+            # ==========================================
+            # STEP 1: EXTRACT FULL HTML FIRST
+            # ==========================================
+            # Capture the raw HTML before modifying the DOM. This ensures your parser 
+            # in the Silver layer still gets 100% of the original data.
+            inner_html = await content_element.inner_html()
+
+            # ==========================================
+            # STEP 2: PRUNE DOM FOR SCREENSHOT (CROP)
+            # ==========================================
+            # Eliminate the "Report Job" row and the giant "Similar Jobs" block below it.
+            await page.evaluate("""() => {
+                // 1. Target the Report section inside the container and remove it along with its siblings
+                const reportSection = document.querySelector('div.job-detail__information-detail--report');
+                if (reportSection) {
+                    let nextSibling = reportSection.nextElementSibling;
+                    while (nextSibling) {
+                        const elToRemove = nextSibling;
+                        nextSibling = nextSibling.nextElementSibling;
+                        elToRemove.remove(); // Strip out remaining sibling elements
+                    }
+                    reportSection.remove(); // Remove the report button itself
+                }
+
+                // 2. Aggressively remove the "Similar Jobs" container at the bottom
+                const similarJobs = document.getElementById('box-job-similar');
+                if (similarJobs) {
+                    similarJobs.remove();
+                }
+                
+                // 3. Remove related jobs wrapper if it exists
+                const relateJobs = document.getElementById('box-relate-jobs');
+                if (relateJobs) {
+                    relateJobs.remove();
+                }
+            }""")
+            
+            # Give the browser 200ms to recalculate the container's height after deletion
+            await page.wait_for_timeout(200)
+
+            # ==========================================
+            # STEP 3: CAPTURE THE CROPPED SCREENSHOT
+            # ==========================================
+            # Now the camera will only capture the beautiful, relevant job details
+            screenshot_bytes = await content_element.screenshot(type="png")
+            
             result = CrawlResult(
                 url=target.url, query=target.query, site=target.site, status="ok",
-                screenshot_bytes=await content_element.screenshot(type="png"),
-                inner_html=await content_element.inner_html(), title=await page.title(),
+                screenshot_bytes=screenshot_bytes, inner_html=inner_html, title=title,
             )
 
             idle_duration = random.uniform(4.0, 10.0)
