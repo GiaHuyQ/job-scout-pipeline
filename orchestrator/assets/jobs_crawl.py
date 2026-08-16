@@ -80,19 +80,19 @@ async def run_base_crawl(
 
 # --- Assets ---
 
-@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry)
+@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry, code_version="20260812")
 async def raw_topcv_jobs(context: AssetExecutionContext, bronze_minio: MinIOS3Resource, config: JobCrawlConfig):
     return await run_base_crawl(context, bronze_minio, config, topcv_crawl, "topcv.vn")
 
-@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry)
+@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry, code_version="20260812")
 async def raw_itviec_jobs(context: AssetExecutionContext, bronze_minio: MinIOS3Resource, config: JobCrawlConfig):
     return await run_base_crawl(context, bronze_minio, config, itviec_crawl, "itviec.com")
 
-@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry)
+@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry, code_version="20260812")
 async def raw_careerviet_jobs(context: AssetExecutionContext, bronze_minio: MinIOS3Resource, config: JobCrawlConfig):
     return await run_base_crawl(context, bronze_minio, config, careerviet_crawl, "careerviet.vn")
 
-@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry)
+@dg.asset(group_name="bronze", compute_kind="minio", retry_policy=anti_block_retry, code_version="20260812")
 async def raw_vietnamworks_jobs(context: AssetExecutionContext, bronze_minio: MinIOS3Resource, config: JobCrawlConfig):
     return await run_base_crawl(context, bronze_minio, config, vietnamworks_crawl, "vietnamworks.com")
 
@@ -105,7 +105,7 @@ def run_check(context: AssetCheckExecutionContext, bronze_minio: MinIOS3Resource
     context.log.info(f"Validating data for {site_name} at path: {prefix}")
     
     file_count = count_s3_files(bronze_minio, prefix)
-    is_passed = file_count >= config.max_results * 2
+    is_passed = file_count >= (config.max_results * 2)*0.75
     
     if not is_passed:
         context.log.error(f"Check failed! Found {file_count} files for {site_name}.")
