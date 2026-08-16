@@ -54,7 +54,7 @@ def extract_careerviet_job_data(html_content: str, metadata: dict) -> JobModel:
     # 1. Extract title
 
     title_tag = soup.find("h1", class_="title") or soup.find("h1")
-    
+
     if title_tag:
         title = title_tag.get_text(strip=True)
     else:
@@ -63,36 +63,47 @@ def extract_careerviet_job_data(html_content: str, metadata: dict) -> JobModel:
 
     # 2. Extract Salary, Level, Type, Deadline
     raw_data = {}
+
     for li in soup.select(".detail-box li"):
         strong = li.find("strong")
+
         if not strong:
             continue
+
         label = strong.get_text(strip=True).replace(":", "").lower()
         p_tag = li.find("p")
         val = p_tag.get_text(strip=True) if p_tag else ""
 
-        if "salary" in label: 
+        if "salary" in label or "lương" in label:
             raw_data["salary"] = val
-        elif "job level" in label: 
+
+        elif "job level" in label or "cấp bậc" in label:
             raw_data["job_level"] = val
-        elif "job type" in label: 
+
+        elif "job type" in label or "hình thức" in label:
             raw_data["job_type"] = val
-        elif "deadline" in label: 
+
+        elif "deadline" in label or "hết hạn nộp" in label:
             raw_data["deadline"] = val
 
     # 3. Extract description & requirements
     desc_html, reqs_html = "", ""
+
     for row in soup.select(".detail-row"):
         title_tag_row = row.find("h2", class_="detail-title")
+
         if not title_tag_row:
             continue
-            
+
         content = row.find("div")
         content_html = content.decode_contents() if content else ""
 
-        if "Job Description" in title_tag_row.text:
+        section_title = title_tag_row.get_text(strip=True)
+
+        if "Job Description" in section_title or "Mô tả Công việc" in section_title:
             desc_html = content_html
-        elif "Job Requirement" in title_tag_row.text:
+
+        elif "Job Requirement" in section_title or "Yêu Cầu Công Việc" in section_title:
             reqs_html = content_html
 
     # 4. Extract location
@@ -105,7 +116,7 @@ def extract_careerviet_job_data(html_content: str, metadata: dict) -> JobModel:
 
     return JobModel(
         title=title,
-        company=unquote(raw_company),   
+        company=unquote(raw_company),
         link=link,
         location=location,
         salary=raw_data.get("salary"),
@@ -124,51 +135,76 @@ def extract_topcv_job_data(html_content: str, metadata: dict) -> JobModel:
     html_content = unquote(html_content)
     soup = BeautifulSoup(html_content, 'html.parser')
 
-    # 1. Extract title from h1 tag
-    title_tag = soup.select_one("h1.job-detail__info--title")
-    title = title_tag.get_text(strip=True) if title_tag else None
+    # 1. Extract title
+    title_tag = soup.select_one("h1.box-header-job__title")
 
-    # 2. Map info sections (Salary, Location, Experience)
-    info_map = {}
-    for section in soup.select(".job-detail__info--section"):
-        title_node = section.select_one(".job-detail__info--section-content-title")
-        val_node = section.select_one(".job-detail__info--section-content-value")
-        if title_node and val_node:
-            key = title_node.get_text(strip=True)
-            val = val_node.get_text(strip=True)
-            info_map[key] = val
+    title = title_tag.get_text(" ", strip=True) if title_tag else None
 
-    # 3. Extract deadline
-    deadline_node = soup.select_one(".job-detail__info--deadline-date")
+    # 2. Extract company
+    company_tag = soup.select_one(".box-company-info__detail .name")
+    company = company_tag.get_text(strip=True) if company_tag else None
+
+    # 3. Extract salary
+    salary_tag = soup.select_one(".box-header-job__salary--title")
+    salary = salary_tag.get_text(strip=True) if salary_tag else None
+
+    # 4. Extract location
+    location = None
+
+    for item in soup.select(".box-header-job-list-info__item"):
+        title_node = item.select_one(".list-info__content__title")
+        value_node = item.select_one(".list-info__content__desc")
+
+        if not title_node or not value_node:
+            continue
+
+        key = title_node.get_text(strip=True)
+        val = value_node.get_text(" ", strip=True)
+
+        if key == "Địa điểm":
+            location = val
+            break
+
+    # 5. Extract deadline
+    deadline_node = soup.select_one(".box-applied-cv .date")
     deadline = deadline_node.get_text(strip=True) if deadline_node else None
 
-    # 4. Extract description and requirements based on specific h3 headers
+    # 6. Extract description and requirements
     desc_html, reqs_html = "", ""
-    for item in soup.select(".job-description__item"):
-        h3 = item.find("h3")
-        if not h3: 
+
+    for item in soup.select(".box-job-information-detail-item"):
+        title_node = item.select_one(
+            ".box-job-information-detail-item__title--title"
+        )
+
+        if not title_node:
             continue
-            
-        h3_text = h3.get_text(strip=True)
-        content = item.select_one(".job-description__item--content")
-        content_html = str(content) if content else ""
-        
-        if "Mô tả công việc" in h3_text:
+
+        section_title = title_node.get_text(strip=True)
+
+        content = item.select_one(
+            ".box-job-information-detail-item__text"
+        )
+
+        content_html = content.decode_contents() if content else ""
+
+        if "Mô tả công việc" in section_title:
             desc_html = content_html
-        elif "Yêu cầu ứng viên" in h3_text:
+
+        elif "Yêu cầu ứng viên" in section_title:
             reqs_html = content_html
 
-    # 5. Extract metadata
-    raw_company = metadata.get("title") or metadata.get("x-amz-meta-title") or "Unknown"
+    # 7. Handle metadata
+    raw_company = metadata.get("title") or metadata.get("x-amz-meta-title") or ""
     link = metadata.get("url") or metadata.get("x-amz-meta-url")
 
     return JobModel(
         title=title,
-        company=unquote(raw_company),
+        company=company or unquote(raw_company),
         link=link,
-        location=info_map.get("Địa điểm"),
-        salary=info_map.get("Mức lương"),
-        job_type=None, 
+        location=location,
+        salary=salary,
+        job_type=None,
         job_level=None,
         deadline=deadline,
         description=desc_html,
@@ -373,7 +409,8 @@ def process_job_site_assets(
             tagging_str = "Pipeline=JobScout&Stage=Silver&DataType=Json"
 
             # 5. Store parsed JSON in Silver bucket
-            silver_key = key.replace(".html", ".json")
+            silver_key = "html/" + key.replace(".html", ".json")
+
             with silver_minio.get_sync_client() as silver_client:
                 silver_client.put_object(
                     Bucket=silver_minio.s3_bucket,
@@ -394,26 +431,26 @@ def process_job_site_assets(
 # DAGSTER ASSETS
 # ==========================================
 
-@dg.asset(group_name="silver", compute_kind="minio", deps=[raw_careerviet_jobs], code_version="20260710")
-def clean_html_careerviet_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
+@dg.asset(group_name="silver", compute_kind="minio", deps=[raw_careerviet_jobs], code_version="20260812")
+def cleanned_html_careerviet_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
     """Processes CareerViet raw HTML, extracts data, and saves to Silver."""
     return process_job_site_assets(context, bronze_minio, silver_minio, "careerviet.vn", extract_careerviet_job_data)
 
 
-@dg.asset(group_name="silver", compute_kind="minio", deps=[raw_topcv_jobs], code_version="20260710")
-def clean_html_topcv_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
+@dg.asset(group_name="silver", compute_kind="minio", deps=[raw_topcv_jobs], code_version="20260812")
+def cleanned_html_topcv_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
     """Processes TopCV raw HTML, extracts data, and saves to Silver."""
     return process_job_site_assets(context, bronze_minio, silver_minio, "topcv.vn", extract_topcv_job_data)
 
 
 @dg.asset(group_name="silver", compute_kind="minio", deps=[raw_itviec_jobs], code_version="20260710")
-def clean_html_itviec_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
+def cleanned_html_itviec_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
     """Processes ITViec raw HTML, extracts data, and saves to Silver."""
     return process_job_site_assets(context, bronze_minio, silver_minio, "itviec.com", extract_itviec_job_data)
 
 
 @dg.asset(group_name="silver", compute_kind="minio", deps=[raw_vietnamworks_jobs], code_version="20260710")
-def clean_html_vietnamworks_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
+def cleanned_html_vietnamworks_jobs(context: dg.AssetExecutionContext, bronze_minio: MinIOS3Resource, silver_minio: MinIOS3Resource):
     """Processes VietnamWorks raw HTML, extracts data, and saves to Silver."""
     return process_job_site_assets(context, bronze_minio, silver_minio, "vietnamworks.com", extract_vietnamworks_job_data)
 
@@ -435,7 +472,7 @@ def validate_silver_jobs_data(
     """
     fetched_at = datetime.now().strftime("%Y-%m-%d")
     query = "ai-engineer"
-    prefix = f"date={fetched_at}/query={query}/site={site_domain}/"
+    prefix = f"html/date={fetched_at}/query={query}/site={site_domain}/"
 
     with silver_minio.get_sync_client() as s3_client:
         objects = s3_client.list_objects_v2(Bucket=silver_minio.s3_bucket, Prefix=prefix).get('Contents', [])
@@ -500,18 +537,18 @@ def validate_silver_jobs_data(
 # DAGSTER ASSET CHECKS
 # ==========================================
 
-@dg.asset_check(asset="clean_html_careerviet_jobs", description="Ensure no null fields and sufficient data for CareerViet")
+@dg.asset_check(asset="cleanned_html_careerviet_jobs", description="Ensure no null fields and sufficient data for CareerViet")
 def check_careerviet_jobs_quality(context: dg.AssetCheckExecutionContext, silver_minio: MinIOS3Resource):
     return validate_silver_jobs_data(context, silver_minio, "careerviet.vn")
 
-@dg.asset_check(asset="clean_html_topcv_jobs", description="Ensure no null fields and sufficient data for TopCV")
+@dg.asset_check(asset="cleanned_html_topcv_jobs", description="Ensure no null fields and sufficient data for TopCV")
 def check_topcv_jobs_quality(context: dg.AssetCheckExecutionContext, silver_minio: MinIOS3Resource):
     return validate_silver_jobs_data(context, silver_minio, "topcv.vn")
 
-@dg.asset_check(asset="clean_html_itviec_jobs", description="Ensure no null fields and sufficient data for ITViec")
+@dg.asset_check(asset="cleanned_html_itviec_jobs", description="Ensure no null fields and sufficient data for ITViec")
 def check_itviec_jobs_quality(context: dg.AssetCheckExecutionContext, silver_minio: MinIOS3Resource):
     return validate_silver_jobs_data(context, silver_minio, "itviec.com")
 
-@dg.asset_check(asset="clean_html_vietnamworks_jobs", description="Ensure no null fields and sufficient data for VietnamWorks")
+@dg.asset_check(asset="cleanned_html_vietnamworks_jobs", description="Ensure no null fields and sufficient data for VietnamWorks")
 def check_vietnamworks_jobs_quality(context: dg.AssetCheckExecutionContext, silver_minio: MinIOS3Resource):
     return validate_silver_jobs_data(context, silver_minio, "vietnamworks.com")
