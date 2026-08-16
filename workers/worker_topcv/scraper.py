@@ -1,25 +1,29 @@
 import argparse
 import asyncio
+import hashlib
 import logging
 import random
-import hashlib
-from urllib.parse import urljoin, quote
+from pathlib import Path
+from urllib.parse import quote, urljoin
+
+from playwright.async_api import Browser, Page, async_playwright
 
 from config import settings
 from logging_config import setup_logging
-from workers.schemas import CrawlTarget, CrawlResult
+from workers.interactions import (
+    human_like_idle_scrolling,
+    purge_sticky_overlays,
+    smooth_scroll_targeted_element,
+)
+from workers.schemas import CrawlResult, CrawlTarget
 from workers.search import search_searxng
-from workers.interactions import smooth_scroll_targeted_element, purge_sticky_overlays, human_like_idle_scrolling
-
-from playwright.async_api import Browser, Page, async_playwright
 
 setup_logging(level=settings.LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
-# TopCV Domain Specific Selectors Configurations
-SELECTOR_JOB_CONTAINER = "div.job-detail__body-left"
+SELECTOR_JOB_CONTAINER = "div.job-detail__box--left, div.job-detail__body-left, #box-job-information-detail"
 SELECTOR_EXPAND_BUTTON = ".content-preview__toggle > button:nth-child(1)"
-SELECTOR_LISTING_ANCHOR = "div.job-item-search-result div.avatar a"
+SELECTOR_LISTING_ANCHOR = "div.job-item-search-result div.avatar a, div.job-item-2023 div.avatar a"
 SELECTOR_NEXT_PAGE = "ul.pagination li.next a, .pagination a.next, .pagination a:has-text('›')"
 
 
@@ -75,7 +79,7 @@ async def extract_inner_links(browser: Browser, main_target: CrawlTarget, limit:
                 
                 await next_button.click()
                 await page.wait_for_load_state("domcontentloaded", timeout=5000)
-                await page.wait_for_timeout(1500) # Allow server side compilation layout adjustments
+                await page.wait_for_timeout(1500)
             else:
                 logger.info("Pagination controls exhausted on TopCV viewport baseline. Ending loop.")
                 break
@@ -91,7 +95,8 @@ async def extract_inner_links(browser: Browser, main_target: CrawlTarget, limit:
             
     return sub_targets
 
-async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semaphore: asyncio.Semaphore, bucket:str, async_s3_client) -> None:
+
+async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semaphore: asyncio.Semaphore, bucket: str, async_s3_client) -> None:
     """Worker lifecycle pipeline: Click interaction, smooth scroll, clean-up, and save."""
     async with semaphore:
         context = None
@@ -129,47 +134,59 @@ async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semapho
             # ==========================================
             # STEP 1: EXTRACT FULL HTML FIRST
             # ==========================================
-            # Capture the raw HTML before modifying the DOM. This ensures your parser 
-            # in the Silver layer still gets 100% of the original data.
             inner_html = await content_element.inner_html()
 
             # ==========================================
             # STEP 2: PRUNE DOM FOR SCREENSHOT (CROP)
             # ==========================================
-            # Eliminate the "Report Job" row and the giant "Similar Jobs" block below it.
+            
             await page.evaluate("""() => {
-                // 1. Target the Report section inside the container and remove it along with its siblings
-                const reportSection = document.querySelector('div.job-detail__information-detail--report');
-                if (reportSection) {
-                    let nextSibling = reportSection.nextElementSibling;
-                    while (nextSibling) {
-                        const elToRemove = nextSibling;
-                        nextSibling = nextSibling.nextElementSibling;
-                        elToRemove.remove(); // Strip out remaining sibling elements
-                    }
-                    reportSection.remove(); // Remove the report button itself
-                }
+                // 1. Remove  'Việc làm liên quan' / 'Similar Jobs' block
+                const similarJobSelectors = [
+                    '.box-job-information-job-similar',
+                    '#box-relate-jobs-clone',
+                    '#box-job-similar',
+                    '#box-relate-jobs',
+                    '.box-job-similar',
+                    '.job-similar'
+                ];
+                similarJobSelectors.forEach(selector => {
+                    document.querySelectorAll(selector).forEach(el => el.remove());
+                });
 
-                // 2. Aggressively remove the "Similar Jobs" container at the bottom
-                const similarJobs = document.getElementById('box-job-similar');
-                if (similarJobs) {
-                    similarJobs.remove();
-                }
-                
-                // 3. Remove related jobs wrapper if it exists
-                const relateJobs = document.getElementById('box-relate-jobs');
-                if (relateJobs) {
-                    relateJobs.remove();
-                }
+                // 2. Remove 'Báo cáo tin tuyển dụng' block
+                const reportSelectors = [
+                    '.box-job-information-address-and-time-report',
+                    'div.job-detail__information-detail--report'
+                ];
+                reportSelectors.forEach(selector => {
+                    document.querySelectorAll(selector).forEach(reportEl => {
+                        let nextSibling = reportEl.nextElementSibling;
+                        while (nextSibling) {
+                            const elToRemove = nextSibling;
+                            nextSibling = nextSibling.nextElementSibling;
+                            elToRemove.remove();
+                        }
+                        reportEl.remove();
+                    });
+                });
+
+                // 3. Remove all other unnecessary tabs
+                const extraSelectors = [
+                    '#tab-company',
+                    '.box-nav-company',
+                    '.top-tet-lucky-money-container'
+                ];
+                extraSelectors.forEach(selector => {
+                    document.querySelectorAll(selector).forEach(el => el.remove());
+                });
             }""")
             
-            # Give the browser 200ms to recalculate the container's height after deletion
             await page.wait_for_timeout(200)
 
             # ==========================================
             # STEP 3: CAPTURE THE CROPPED SCREENSHOT
             # ==========================================
-            # Now the camera will only capture the beautiful, relevant job details
             screenshot_bytes = await content_element.screenshot(type="png")
             
             result = CrawlResult(
@@ -190,7 +207,7 @@ async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semapho
         # Commit result to streaming layers
         if result and result.status == "ok" and result.inner_html is not None and result.screenshot_bytes is not None:
             try:
-                job_id  = hashlib.sha256(result.url.encode()).hexdigest()[:16]
+                job_id = hashlib.sha256(result.url.encode()).hexdigest()[:16]
                 query = result.query.replace(" ", "-").lower()
                 date_str = str(result.fetched_at.date())
                 fetched_at_iso = result.fetched_at.isoformat()
@@ -229,7 +246,6 @@ async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semapho
                     ContentType="text/html",
                     Metadata=html_metadata,
                     Tagging=html_tagging
-
                 )
 
                 logger.info("Streaming PNG directly from RAM to MinIO: %s", png_key)
@@ -250,7 +266,7 @@ async def fetch_and_stream_worker(browser: Browser, target: CrawlTarget, semapho
         await asyncio.sleep(actual_delay)
 
 
-async def run_crawl(keyword: str, site: str | None, max_results: int, bucket:str, async_s3_client) -> int:
+async def run_crawl(keyword: str, site: str | None, max_results: int, bucket: str, async_s3_client) -> int:
     """Main sequence controller orchestrating clusters execution."""
     main_targets = search_searxng(keyword, site)
     if not main_targets:
@@ -283,7 +299,7 @@ async def run_crawl(keyword: str, site: str | None, max_results: int, bucket:str
             
             tasks = [
                 fetch_and_stream_worker(browser, t, semaphore, bucket, async_s3_client) 
-                    for t in unique_sub_targets
+                for t in unique_sub_targets
             ]
             
             await asyncio.gather(*tasks)
@@ -298,9 +314,8 @@ async def run_crawl(keyword: str, site: str | None, max_results: int, bucket:str
             await browser.close()
 
 
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Standalone Test Entrypoint Executable for CareerViet.")
+    parser = argparse.ArgumentParser(description="Standalone Test Entrypoint Executable for TopCV.")
     parser.add_argument("--keyword", required=True)
     parser.add_argument("--site", default="topcv.vn")
     parser.add_argument("--max-results", type=int, default=3)
@@ -311,16 +326,16 @@ def main() -> None:
     from aiobotocore.config import AioConfig
 
     MINIO_CONFIG = {
-    "endpoint_url": settings.MINIO_ENDPOINT_URL,
-    "aws_access_key_id": settings.MINIO_ROOT_USER,
-    "aws_secret_access_key": settings.MINIO_ROOT_PASSWORD.get_secret_value(),
-    "config": AioConfig(signature_version="s3v4"),
-    "region_name": "us-east-1"
-}
+        "endpoint_url": settings.MINIO_ENDPOINT_URL,
+        "aws_access_key_id": settings.MINIO_ROOT_USER,
+        "aws_secret_access_key": settings.MINIO_ROOT_PASSWORD.get_secret_value(),
+        "config": AioConfig(signature_version="s3v4"),
+        "region_name": "us-east-1"
+    }
 
     async def async_test_runner():
         session = aioboto3.Session()
-        async with session.client("s3", **MINIO_CONFIG) as async_s3_client: # type: ignore
+        async with session.client("s3", **MINIO_CONFIG) as async_s3_client:
             await run_crawl(
                 keyword=args.keyword, 
                 site=args.site, 
