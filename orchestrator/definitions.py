@@ -1,12 +1,18 @@
 import os
 from pathlib import Path
+
 import dagster as dg
-from dagster import Definitions, load_assets_from_modules, load_asset_checks_from_modules
+from dagster import (
+    Definitions,
+    load_asset_checks_from_modules,
+    load_assets_from_modules,
+)
+
+from orchestrator.assets import jobs_crawl, jobs_html_extract
+from orchestrator.jobs import bronze_jobs_pipeline, silver_jobs_pipeline
 
 # Import your custom modules
 from orchestrator.resources.minio_resource import MinIOS3Resource
-from orchestrator.assets import jobs_crawl, jobs_html_extract, jobs_png_extract
-from orchestrator.jobs import bronze_jobs_pipeline, silver_jobs_pipeline
 from orchestrator.schedulers import schedules
 
 # ==========================================
@@ -22,15 +28,15 @@ shared_minio_creds = {
 # ==========================================
 # DEFINITIONS
 # ==========================================
-jobs_scout = Definitions(
+defs = Definitions(
     # Automatically load all assets and asset_checks from these modules
     # This replaces the need to list 20+ variables manually
     assets=[
-        *load_assets_from_modules([jobs_crawl, jobs_html_extract, jobs_png_extract])
+        *load_assets_from_modules([jobs_crawl, jobs_html_extract])
     ],
     
     asset_checks=[
-        *load_asset_checks_from_modules([jobs_crawl, jobs_html_extract, jobs_png_extract])
+        *load_asset_checks_from_modules([jobs_crawl, jobs_html_extract])
     ],
 
     # Register the jobs and schedules from your new files
@@ -48,5 +54,3 @@ jobs_scout = Definitions(
     }
 )
 
-
-os.environ["DAGSTER_HOME"] = str(Path(__file__).parent.parent / ".dagster_home")
